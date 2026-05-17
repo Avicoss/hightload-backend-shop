@@ -34,49 +34,59 @@ cd "$(dirname "$0")/.."
 
 step() { printf "\n\033[36m=== %s ===\033[0m\n" "$1"; }
 
-# Установка зависимостей
+if [[ ! -f .env ]]; then
+    echo "Не найден .env в корне проекта (см. .env.example)" >&2
+    exit 1
+fi
+
 if [[ "$SKIP_INSTALL" -eq 0 ]]; then
     step "Установка зависимостей"
     pip install -r requirements.txt
     pip install -r requirements-dev.txt
 fi
 
-# Подъём стека
 step "docker-compose up -d"
 docker-compose up -d
 
-# Миграции
 step "Применение миграций"
 docker-compose run --rm migrate
 
-# Интеграционные тесты
+# init-script Postgres отрабатывает ТОЛЬКО на свежем volume - на существующем
+# томе shop_db_test не появится. Создаём явно, идемпотентно
+step "Создание shop_db_test (если ещё нет)"
+DB_EXISTS=$(docker-compose exec -T postgres psql -U shop_user -d postgres -tAc \
+    "SELECT 1 FROM pg_database WHERE datname='shop_db_test'" | tr -d '[:space:]\r')
+if [[ "$DB_EXISTS" != "1" ]]; then
+    docker-compose exec -T postgres createdb -U shop_user shop_db_test
+    echo "shop_db_test создана"
+else
+    echo "shop_db_test уже существует"
+fi
+
 if [[ "$SKIP_TESTS" -eq 0 ]]; then
     step "Интеграционные тесты"
     docker-compose --profile test run --rm test
 fi
 
-# Seed основных данных + извлечение JWT
 step "Seed данных и получение JWT"
 SEED_OUTPUT="$(docker-compose exec -T api python scripts/seed.py)"
 echo "$SEED_OUTPUT"
 
 # JWT печатается последней строкой с отступом - берём её
-JWT="$(echo "$SEED_OUTPUT" | grep -E '^[[:space:]]+eyJ' | tail -n 1 | xargs)"
+# (... || true) - чтобы pipefail не убил скрипт до явной проверки на пустоту
+JWT="$(echo "$SEED_OUTPUT" | { grep -E '^[[:space:]]+eyJ' || true; } | tail -n 1 | xargs)"
 if [[ -z "$JWT" ]]; then
     echo "Не удалось извлечь JWT из вывода seed.py" >&2
     exit 1
 fi
 
-# Посев 10 продуктов для нагрузочного теста
 step "Посев продуктов для нагрузки"
 docker-compose exec -T postgres psql -U shop_user -d shop_db -c \
     "INSERT INTO products (product_id, stock, description) SELECT s, 1000000, 'Load test product ' || s FROM generate_series(1, 10) s ON CONFLICT (product_id) DO UPDATE SET stock = 1000000;"
 
-# Экспорт JWT
 export LOAD_TEST_JWT="$JWT"
 printf "\n\033[32mLOAD_TEST_JWT установлен (длина %d)\033[0m\n" "${#JWT}"
 
-# Запуск Locust
 step "Запуск Locust"
 if [[ "$UI" -eq 1 ]]; then
     echo -e "\033[33mWeb UI: http://localhost:8089\033[0m"

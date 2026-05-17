@@ -19,48 +19,67 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 
 function Step($msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
 
-# 1. Установка зависимостей
+# $ErrorActionPreference="Stop" не ловит exit code нативных команд в PowerShell 5.1
+# поэтому проверяем $LASTEXITCODE вручную после каждого вызова docker-compose/pip/etc
+function Check($label) {
+    if ($LASTEXITCODE -ne 0) {
+        throw "$label завершился с кодом $LASTEXITCODE"
+    }
+}
+
+if (-not (Test-Path ".env")) {
+    throw "Не найден .env в корне проекта (см. .env.example)"
+}
+
 if (-not $SkipInstall) {
     Step "Установка зависимостей"
-    pip install -r requirements.txt
-    pip install -r requirements-dev.txt
+    pip install -r requirements.txt;     Check "pip install requirements.txt"
+    pip install -r requirements-dev.txt; Check "pip install requirements-dev.txt"
 }
 
-# 2. Подъём стека
 Step "docker-compose up -d"
-docker-compose up -d
+docker-compose up -d; Check "docker-compose up -d"
 
-# 3. Миграции
 Step "Применение миграций"
-docker-compose run --rm migrate
+docker-compose run --rm migrate; Check "alembic upgrade head"
 
-# 4. Интеграционные тесты
+# init-script Postgres отрабатывает ТОЛЬКО на свежем volume - на существующем
+# томе shop_db_test не появится. Создаём явно, идемпотентно
+Step "Создание shop_db_test (если ещё нет)"
+$dbExists = docker-compose exec -T postgres psql -U shop_user -d postgres -tAc `
+    "SELECT 1 FROM pg_database WHERE datname='shop_db_test'"
+if (-not ($dbExists -match "1")) {
+    docker-compose exec -T postgres createdb -U shop_user shop_db_test
+    Check "createdb shop_db_test"
+    Write-Host "shop_db_test создана" -ForegroundColor Green
+} else {
+    Write-Host "shop_db_test уже существует" -ForegroundColor DarkGray
+}
+
 if (-not $SkipTests) {
     Step "Интеграционные тесты"
-    docker-compose --profile test run --rm test
+    docker-compose --profile test run --rm test; Check "pytest"
 }
 
-# 5. Seed основных данных + извлечение JWT
 Step "Seed данных и получение JWT"
-$seedOutput = docker-compose exec api python scripts/seed.py
+$seedOutput = docker-compose exec -T api python scripts/seed.py; Check "seed.py"
 $seedOutput | ForEach-Object { Write-Host $_ }
 
-# JWT печатается последней строкой с отступом - берём её
-$jwt = ($seedOutput | Where-Object { $_ -match '^\s+eyJ' } | Select-Object -Last 1).Trim()
-if (-not $jwt) {
+# JWT печатается последней строкой с отступом - сначала находим, потом .Trim()
+$jwtLine = $seedOutput | Where-Object { $_ -match '^\s+eyJ' } | Select-Object -Last 1
+if (-not $jwtLine) {
     throw "Не удалось извлечь JWT из вывода seed.py"
 }
+$jwt = $jwtLine.ToString().Trim()
 
-# 6. Посев 10 продуктов для нагрузочного теста
 Step "Посев продуктов для нагрузки"
-docker-compose exec postgres psql -U shop_user -d shop_db -c `
+docker-compose exec -T postgres psql -U shop_user -d shop_db -c `
     "INSERT INTO products (product_id, stock, description) SELECT s, 1000000, 'Load test product ' || s FROM generate_series(1, 10) s ON CONFLICT (product_id) DO UPDATE SET stock = 1000000;"
+Check "INSERT products"
 
-# 7. Экспорт JWT
 $env:LOAD_TEST_JWT = $jwt
 Write-Host "`nLOAD_TEST_JWT установлен (длина $($jwt.Length))" -ForegroundColor Green
 
-# 8. Запуск Locust
 Step "Запуск Locust"
 if ($Ui) {
     Write-Host "Web UI: http://localhost:8089" -ForegroundColor Yellow

@@ -17,7 +17,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.drop_index("ix_orders_idempotency_key", table_name="orders")
+    # IF EXISTS: на свежей БД индекса нет (его создавал только старый 001), но миграция должна пройти
+    op.execute("DROP INDEX IF EXISTS ix_orders_idempotency_key")
 
 
 def downgrade() -> None:
