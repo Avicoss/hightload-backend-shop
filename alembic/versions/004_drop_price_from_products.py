@@ -16,7 +16,8 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.drop_column("products", "price")
+    # IF EXISTS: на свежей БД (001 уже без price) колонки нет, миграция должна пройти молча
+    op.execute("ALTER TABLE products DROP COLUMN IF EXISTS price")
 
 
 def downgrade() -> None:

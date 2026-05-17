@@ -1,4 +1,4 @@
-# Полный цикл проверки: установка зависимостей, интеграционные тесты,
+﻿# Полный цикл проверки: установка зависимостей, интеграционные тесты,
 # подъём стека, миграции, seed, посев продуктов и запуск Locust
 #
 # Использование:
@@ -15,6 +15,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# UTF-8 для консоли - иначе кириллица в Write-Host и stderr дочерних процессов
+# превращается в кракозябры (Windows PowerShell 5.1 по умолчанию cp866/cp1251)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
 function Step($msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
