@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Env
+.env
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Тесты / покрытие
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Локальные данные
+locust_output/
+
+# OS
+.DS_Store
+Thumbs.db
+
